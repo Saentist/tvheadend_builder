@@ -7,6 +7,25 @@ declare -A DEPENDENCY_GROUPS=(
     [GPU_Drivers]="nvidia-smi lscpu mesa-utils vulkan-tools"
 )
 
+LOG_FILE="dependency_install.log"
+DRY_RUN=false
+
+# Ensure the script is run with root privileges
+check_root_permissions() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Error: This script must be run as root. Use sudo."
+        exit 1
+    fi
+}
+
+# Trap for handling script interruption
+trap "echo 'Script interrupted. Exiting...'; exit 1" SIGINT SIGTERM
+
+# Logging setup
+setup_logging() {
+    exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
 # Function to check if a dependency is installed
 check_dependency() {
     local dependency=$1
@@ -19,11 +38,12 @@ check_dependency() {
 }
 
 # Function to install missing dependencies
-install_dependency() {
-    local dependency=$1
-    echo "Attempting to install $dependency..."
+install_dependencies() {
+    local dependencies=("$@")
+    echo "Attempting to install: ${dependencies[*]}..."
     if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -y && sudo apt-get install -y "$dependency"
+        sudo apt-get update -y
+        sudo apt-get install -y "${dependencies[@]}"
     else
         echo "Error: This script is intended for Debian/Ubuntu systems with apt-get."
         exit 1
@@ -50,7 +70,7 @@ select_dependency_groups() {
         SELECTED_GROUPS=("${group_keys[@]}")
     else
         for num in $selection; do
-            if ((num >= 1 && num <= ${#group_keys[@]})); then
+            if [[ "$num" =~ ^[0-9]+$ ]] && ((num >= 1 && num <= ${#group_keys[@]})); then
                 SELECTED_GROUPS+=("${group_keys[$((num-1))]}")
             else
                 echo "Invalid selection: $num. Skipping."
@@ -62,14 +82,41 @@ select_dependency_groups() {
 # Function to check and install dependencies for selected groups
 check_and_install_dependencies() {
     echo "Checking for selected dependency groups..."
+    missing_dependencies=()
     for group in "${SELECTED_GROUPS[@]}"; do
         echo "Processing group: $group"
         dependencies=(${DEPENDENCY_GROUPS[$group]})
         for dependency in "${dependencies[@]}"; do
             if ! check_dependency "$dependency"; then
-                echo "Do you want to install $dependency? (y/n)"
-                read -r response
-                if [[ "$response" =~ ^[Yy]$ ]]; then
-                    install_dependency "$dependency"
+                missing_dependencies+=("$dependency")
+            fi
+        done
+    done
 
-
+    if [ "${#missing_dependencies[@]}" -eq 0 ]; then
+        echo "All dependencies are already installed."
+    else
+        echo "Missing dependencies: ${missing_dependencies[*]}"
+        if [ "$DRY_RUN" = true ]; then
+            echo "Dry run mode: Skipping installation."
+        else
+            echo "Do you want to install the missing dependencies? (y/n)"
+            read -r response
+            if [[ "$response" =~ ^[Yy]$ ]]; then
+                install_dependencies "${missing_dependencies[@]}"
+            else
+                echo "Skipping installation."
+            fi
+        fi
+    fi
+}
+
+# Main script execution
+main() {
+    check_root_permissions
+    setup_logging
+    select_dependency_groups
+    check_and_install_dependencies
+}
+
+main
